@@ -100,6 +100,9 @@ class DoctolibSlots:
 
         request.update_practitioner_type(parse_practitioner_type(centre, rdata))
         set_doctolib_center_internal_id(request, rdata, practice_id, practice_same_adress)
+
+        center_profile_id = rdata.get("profile", {}).get("id", None)
+
         # Check if  appointments are allowed
         if not is_allowing_online_appointments(rdata):
             request.set_appointments_only_by_phone(True)
@@ -155,6 +158,7 @@ class DoctolibSlots:
                 practice_ids_q,
                 timetable_start_date,
                 appointment_schedules,
+                center_profile_id=center_profile_id
             )
             if availability and (not first_availability or availability < first_availability):
                 first_availability = availability
@@ -171,6 +175,7 @@ class DoctolibSlots:
         appointment_schedules: list,
         page: int = 1,
         first_availability: Optional[str] = None,
+        center_profile_id=None
     ) -> Optional[str]:
         """
         Get timetables recursively with `doctolib.pagination.days` as the number of days to query.
@@ -181,6 +186,7 @@ class DoctolibSlots:
         """
         if page > DOCTOLIB_CONF.pagination["pages"]:
             return first_availability
+
         sdate, appt, schedules, ended, next_slot = self.get_appointments(
             request,
             start_date.strftime("%Y-%m-%d"),
@@ -191,6 +197,7 @@ class DoctolibSlots:
             DOCTOLIB_CONF.pagination["days"],
             request.get_start_date(),
             appointment_schedules,
+            center_profile_id=center_profile_id
         )
         if ended:
             return first_availability
@@ -214,6 +221,7 @@ class DoctolibSlots:
                 appointment_schedules,
                 page=1 + max(0, floor(diff.days / DOCTOLIB_CONF.pagination["days"])) + page,
                 first_availability=first_availability,
+                center_profile_id=center_profile_id
             )
         if not sdate:
             return first_availability
@@ -234,6 +242,7 @@ class DoctolibSlots:
             appointment_schedules,
             1 + page,
             first_availability=first_availability,
+            center_profile_id=center_profile_id
         )
 
     def sort_agenda_ids(self, all_agendas, ids) -> List[str]:
@@ -290,6 +299,7 @@ class DoctolibSlots:
         limit: int,
         start_date_original: str,
         appointment_schedules: list,
+        center_profile_id: int
     ):
         stop = False
         motive_availability = False
@@ -300,7 +310,7 @@ class DoctolibSlots:
             motive_id=motive_id,
             agenda_ids_q=agenda_ids_q,
             practice_ids_q=practice_ids_q,
-            limit=limit,
+            limit=limit
         )
         request.increase_request_count("slots")
         try:
@@ -331,6 +341,8 @@ class DoctolibSlots:
             for slot_info in slot_list:
                 if isinstance(slot_info, str):
                     continue
+
+                self.check_appointment(slot_info, agenda_ids_q, practice_ids_q, center_profile_id, visit_motive_ids)
                 sdate = slot_info.get("start_date", None)
                 if not sdate:
                     continue
@@ -379,6 +391,59 @@ class DoctolibSlots:
         if not first_availability and not slots.get("next_slot", None):
             stop = True
         return first_availability, appointment_count, appointment_schedules, stop, slots.get("next_slot")
+
+    def check_appointment(self, slot, agenda_ids_q: str, practice_ids_q: str, center_profile_id: int, visit_motive_ids: Dict[int, str]):
+        visit_motive_ids_list = visit_motive_ids.keys()
+        appointment_api_url = DOCTOLIB_CONF.api.get("appointments", "")
+
+        for slot_step in slot["steps"]:
+            if slot_step["visit_motive_id"] in visit_motive_ids_list: # it's a valid motiv
+                request_payload = {
+                    "agenda_ids": agenda_ids_q,
+                    "practice_ids": list(map(lambda pid: int(pid), practice_ids_q.split("-"))),
+                    "appointment": {
+                        "start_date": slot_step["start_date"],
+                        "visit_motive_ids": str(slot_step["visit_motive_id"]),
+                        "profile_id": center_profile_id,
+                        "source_action":"profile"
+                    }
+                }
+
+                #request.increase_request_count("appointments")
+                try:
+                    response = self._client.post(
+                        appointment_api_url,
+                        headers={"Content-Type": "application/json", **DOCTOLIB_HEADERS},
+                        data=json.dumps(request_payload))
+                except httpx.ReadTimeout:
+                    logger.warning(f"Doctolib returned error ReadTimeout for url {request.get_url()}")
+                    #request.increase_request_count("time-out")
+                    raise BlockedByDoctolibError(request.get_url())
+                if response.status_code == 403 or response.status_code == 400:
+                    #request.increase_request_count("invalid_appointment")
+                    logger.warning(f"Doctolib returned error status code {response.status_code} for url {request.get_url()} and appointment start date {slot_step['start_date']}")
+                    #request.increase_request_count("error")
+                    raise BlockedByDoctolibError(request.get_url())
+
+                response.raise_for_status()
+                time.sleep(self._cooldown_interval)
+                appointment = response.json()
+
+                is_valid_slot_step = ("start_date" in appointment and appointment["start_date"] == slot_step["start_date"] and
+                    "end_date" in appointment and appointment["end_date"] == slot_step["end_date"] and
+                    "visit_motive_id" in appointment and appointment["visit_motive_id"] == slot_step["visit_motive_id"])
+
+                if not is_valid_slot_step:
+                    #request.increase_request_count("invalid_appointment")
+                    logger.warning(f"We found an invalid slot step start date {slot_step['start_date']}")
+                    logger.debug("slot_step")
+                    logger.debug(slot_step)
+                    logger.debug("slot")
+                    logger.debug(slot)
+                    logger.debug("appointment")
+                    logger.debug(appointment)
+                else:
+                    logger.debug(f"Valid appointment for start_date: {slot_step['start_date']}")
 
 
 def set_doctolib_center_internal_id(

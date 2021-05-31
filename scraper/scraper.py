@@ -49,6 +49,7 @@ def scrape_debug(urls):  # pragma: no cover
         if result.request.appointment_count:
             logger.debug(f"appointments: {result.request.appointment_count}:\n{result.request.appointment_schedules}")
         log_requests(result.request)
+        #logger.info(result.request.__dict__)
 
 
 def scrape(platforms=None):  # pragma: no cover

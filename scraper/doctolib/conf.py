@@ -36,6 +36,7 @@ class DoctolibConf(BaseModel):
     api: Dict[str, str] = {
         "booking": "https://partners.doctolib.fr/booking/{centre}.json",
         "slots": "https://partners.doctolib.fr/availabilities.json?start_date={start_date}&visit_motive_ids={motive_id}&agenda_ids={agenda_ids_q}&insurance_sector=public&practice_ids={practice_ids_q}&destroy_temporary=true&limit={limit}",
+        "appointments": "https://partners.doctolib.fr/appointments.json",
         "scraper": "http://www.doctolib.fr/vaccination-covid-19/france.json?page={0}",
         "scraper_dep": "http://www.doctolib.fr/vaccination-covid-19/{0}.json?page={1}",
     }
